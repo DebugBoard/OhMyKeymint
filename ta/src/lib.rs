@@ -774,6 +774,12 @@ impl KeyMintTa {
                 // Attestation IDs are not populated, but we have a trait implementation that
                 // may provide them.
                 match get_ids_impl.get_ids() {
+                    Ok(Some(ids)) if get_ids_impl.ids_are_provisional() => {
+                        // Some of the IDs may still be filled in later, so use them for this
+                        // request only rather than freezing them for the lifetime of the TA.
+                        warn!("Using provisional attestation IDs without caching them");
+                        return Some(Arc::new(ids));
+                    }
                     Ok(Some(ids)) => *self.attestation_id_info.borrow_mut() = Some(Arc::new(ids)),
                     Ok(None) => warn!("Attestation IDs not yet available"),
                     Err(e) => error!("Failed to retrieve attestation IDs: {e:?}"),

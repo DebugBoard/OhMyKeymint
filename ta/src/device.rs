@@ -196,6 +196,13 @@ pub trait RetrieveAttestationIds: Send {
         self.get().map(Some)
     }
 
+    /// Indicate whether the IDs returned by the most recent [`RetrieveAttestationIds::get_ids`]
+    /// call are provisional, i.e. some of them may still be filled in later.  Implementations that
+    /// always return fully provisioned IDs can keep the default.
+    fn ids_are_provisional(&self) -> bool {
+        false
+    }
+
     /// Destroy all attestation IDs associated with the device.
     fn destroy_all(&mut self) -> Result<(), Error>;
 }
