@@ -35,7 +35,7 @@ use kmr_wire::{
     KeySizeInBits, RsaExponent,
 };
 use spki::ObjectIdentifier;
-use std::{borrow::Cow, vec::Vec};
+use std::{borrow::Cow, string::String, vec::Vec};
 use x509_cert::der as x509_der;
 use x509_cert::der::asn1::{
     Any as X509Any, BitString as X509BitString, GeneralizedTime as X509GeneralizedTime,
@@ -627,89 +627,117 @@ impl AttestationIds<'_> {
     }
 
     fn check_match(&self, wanted: &crate::AttestationIdInfo) -> Result<(), Error> {
-        if self
-            .brand
-            .as_ref()
-            .is_some_and(|brand| *brand != wanted.brand)
-        {
-            return Err(km_err!(
-                CannotAttestIds,
-                "attestation ID mismatch for brand"
-            ));
-        }
-        if self
-            .device
-            .as_ref()
-            .is_some_and(|device| *device != wanted.device)
-        {
-            return Err(km_err!(
-                CannotAttestIds,
-                "attestation ID mismatch for device"
-            ));
-        }
-        if self
-            .product
-            .as_ref()
-            .is_some_and(|product| *product != wanted.product)
-        {
-            return Err(km_err!(
-                CannotAttestIds,
-                "attestation ID mismatch for product"
-            ));
-        }
-        if self
-            .serial
-            .as_ref()
-            .is_some_and(|serial| *serial != wanted.serial)
-        {
-            return Err(km_err!(
-                CannotAttestIds,
-                "attestation ID mismatch for serial"
-            ));
-        }
+        check_id_match(
+            "brand",
+            self.brand.as_deref(),
+            &[&wanted.brand],
+            IdKind::Public,
+        )?;
+        check_id_match(
+            "device",
+            self.device.as_deref(),
+            &[&wanted.device],
+            IdKind::Public,
+        )?;
+        check_id_match(
+            "product",
+            self.product.as_deref(),
+            &[&wanted.product],
+            IdKind::Public,
+        )?;
+        check_id_match(
+            "manufacturer",
+            self.manufacturer.as_deref(),
+            &[&wanted.manufacturer],
+            IdKind::Public,
+        )?;
+        check_id_match(
+            "model",
+            self.model.as_deref(),
+            &[&wanted.model],
+            IdKind::Public,
+        )?;
+        check_id_match(
+            "serial",
+            self.serial.as_deref(),
+            &[&wanted.serial],
+            IdKind::Personal,
+        )?;
         // The IMEI fields can match any valid IMEI value.
-        if self
-            .imei
-            .as_ref()
-            .is_some_and(|imei| *imei != wanted.imei && *imei != wanted.imei2)
-        {
-            return Err(km_err!(CannotAttestIds, "attestation ID mismatch for imei"));
-        }
-        if self
-            .imei2
-            .as_ref()
-            .is_some_and(|imei2| *imei2 != wanted.imei2 && *imei2 != wanted.imei)
-        {
-            return Err(km_err!(
-                CannotAttestIds,
-                "attestation ID mismatch for imei2"
-            ));
-        }
-        if self.meid.as_ref().is_some_and(|meid| *meid != wanted.meid) {
-            return Err(km_err!(CannotAttestIds, "attestation ID mismatch for meid"));
-        }
-        if self
-            .manufacturer
-            .as_ref()
-            .is_some_and(|mfr| *mfr != wanted.manufacturer)
-        {
-            return Err(km_err!(
-                CannotAttestIds,
-                "attestation ID mismatch for manufacturer"
-            ));
-        }
-        if self
-            .model
-            .as_ref()
-            .is_some_and(|model| *model != wanted.model)
-        {
-            return Err(km_err!(
-                CannotAttestIds,
-                "attestation ID mismatch for model"
-            ));
-        }
+        let imeis: [&[u8]; 2] = [&wanted.imei, &wanted.imei2];
+        check_id_match("imei", self.imei.as_deref(), &imeis, IdKind::Personal)?;
+        check_id_match("imei2", self.imei2.as_deref(), &imeis, IdKind::Personal)?;
+        check_id_match(
+            "meid",
+            self.meid.as_deref(),
+            &[&wanted.meid],
+            IdKind::Personal,
+        )?;
         Ok(())
     }
+}
+
+/// Whether an attestation ID value is safe to spell out in a log message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum IdKind {
+    /// Device identity strings such as brand or model, which any caller can already read from the
+    /// corresponding `android.os.Build` field.
+    Public,
+    /// Telephony identifiers and the device serial, which are personal data.
+    Personal,
+}
+
+/// Fail with [`ErrorCode::CannotAttestIds`] unless `requested` is absent or matches one of the
+/// `permitted` values.
+///
+/// The error names both sides of the comparison so that a mismatch can be diagnosed from the log
+/// without having to guess which value the framework sent; personal data is masked.
+fn check_id_match(
+    name: &str,
+    requested: Option<&[u8]>,
+    permitted: &[&[u8]],
+    kind: IdKind,
+) -> Result<(), Error> {
+    let Some(requested) = requested else {
+        return Ok(());
+    };
+    if permitted.iter().any(|value| *value == requested) {
+        return Ok(());
+    }
+
+    let permitted: Vec<String> = permitted
+        .iter()
+        .map(|value| describe_id(value, kind))
+        .collect();
+    Err(km_err!(
+        CannotAttestIds,
+        "attestation ID mismatch for {name}: request has {}, device has {}",
+        describe_id(requested, kind),
+        permitted.join(" or ")
+    ))
+}
+
+fn describe_id(value: &[u8], kind: IdKind) -> String {
+    if value.is_empty() {
+        return String::from("<empty>");
+    }
+    let text = String::from_utf8_lossy(value);
+    match kind {
+        IdKind::Public => format!("\"{text}\""),
+        IdKind::Personal => mask_id(&text),
+    }
+}
+
+/// Render an identifier as its first and last two characters so that a mismatch is recognisable
+/// without writing personal data to the log.
+fn mask_id(value: &str) -> String {
+    let chars: Vec<char> = value.chars().collect();
+    if chars.len() <= 4 {
+        return "*".repeat(chars.len());
+    }
+    let prefix: String = chars.iter().take(2).collect();
+    let suffix: String = chars[chars.len() - 2..].iter().collect();
+    format!("{prefix}{}{suffix}", "*".repeat(chars.len() - 4))
 }
 
 impl<'a> AuthorizationList<'a> {
@@ -1588,6 +1616,76 @@ mod tests {
     use super::*;
     use crate::{AttestationIdInfo, KeyMintHalVersion};
     use std::vec;
+
+    fn cannot_attest_ids_message(error: &Error) -> String {
+        match error.kind() {
+            CommonErrorKind::Hal(ErrorCode::CannotAttestIds, message) => message.to_string(),
+            other => panic!("expected a CannotAttestIds error, got {other:?}"),
+        }
+    }
+
+    fn device_ids() -> AttestationIdInfo {
+        AttestationIdInfo {
+            brand: b"Redmi".to_vec(),
+            device: b"rodin".to_vec(),
+            product: b"rodin".to_vec(),
+            serial: b"f7bade1234".to_vec(),
+            imei: b"490154203237518".to_vec(),
+            imei2: vec![],
+            meid: vec![],
+            manufacturer: b"Xiaomi".to_vec(),
+            model: b"24069PC21G".to_vec(),
+        }
+    }
+
+    #[test]
+    fn public_id_mismatch_names_both_values() {
+        let requested = AttestationIds {
+            product: Some(b"rodin_global".as_slice().into()),
+            ..Default::default()
+        };
+
+        let error = requested.check_match(&device_ids()).unwrap_err();
+
+        let message = cannot_attest_ids_message(&error);
+        assert!(
+            message.contains("mismatch for product")
+                && message.contains("request has \"rodin_global\"")
+                && message.contains("device has \"rodin\""),
+            "unhelpful mismatch message: {message}"
+        );
+    }
+
+    #[test]
+    fn personal_id_mismatch_is_masked() {
+        let requested = AttestationIds {
+            imei: Some(b"356938035643809".as_slice().into()),
+            ..Default::default()
+        };
+
+        let error = requested.check_match(&device_ids()).unwrap_err();
+
+        let message = cannot_attest_ids_message(&error);
+        assert!(message.contains("mismatch for imei"), "{message}");
+        assert!(message.contains("35***********09"), "{message}");
+        assert!(
+            !message.contains("356938035643809") && !message.contains("490154203237518"),
+            "IMEI must not be logged in the clear: {message}"
+        );
+    }
+
+    #[test]
+    fn matching_ids_are_accepted() {
+        let requested = AttestationIds {
+            brand: Some(b"Redmi".as_slice().into()),
+            model: Some(b"24069PC21G".as_slice().into()),
+            // The second IMEI slot may carry either of the device's IMEIs.
+            imei2: Some(b"490154203237518".as_slice().into()),
+            ..Default::default()
+        };
+
+        assert!(requested.check_match(&device_ids()).is_ok());
+    }
 
     #[test]
     fn test_rsa_signature_algorithm_has_null_parameters() {
