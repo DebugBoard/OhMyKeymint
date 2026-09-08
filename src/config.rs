@@ -23,7 +23,84 @@ static CONFIG_FILE_WRITE_LOCK: Mutex<()> = Mutex::new(());
 
 const CONFIG_PATH: &str = "/data/misc/keystore/omk/config.toml";
 const CONFIG_VERSION_V1: u32 = 1;
-const CURRENT_CONFIG_VERSION: u32 = 2;
+const CONFIG_VERSION_V2: u32 = 2;
+const CURRENT_CONFIG_VERSION: u32 = 3;
+
+/// The `[device]` identity fields, each paired with the system property it
+/// mirrors. Android derives the value it sends in a device-ID attestation
+/// request from `<property>_for_attestation` when that property is set, and
+/// otherwise from `<property>` itself, so OMK must attest the same value for the
+/// request to match.
+const DEVICE_IDENTITY_FIELDS: &[(&str, &str)] = &[
+    ("brand", "ro.product.brand"),
+    ("device", "ro.product.device"),
+    ("product", "ro.product.name"),
+    ("manufacturer", "ro.product.manufacturer"),
+    ("model", "ro.product.model"),
+    ("serial", "ro.serialno"),
+];
+
+/// The value Android attests for `property`: `<property>_for_attestation` when
+/// set, otherwise the plain `<property>`. Empty when neither is readable (only
+/// really the case off-device, in tests).
+fn attested_property_value(property: &str) -> String {
+    let for_attestation =
+        rsproperties::get_or(&format!("{property}_for_attestation"), String::new());
+    if !for_attestation.trim().is_empty() {
+        return for_attestation;
+    }
+    rsproperties::get_or(property, String::new())
+}
+
+fn device_identity_field_mut<'a>(
+    device: &'a mut DeviceProperty,
+    field: &str,
+) -> Option<&'a mut String> {
+    Some(match field {
+        "brand" => &mut device.brand,
+        "device" => &mut device.device,
+        "product" => &mut device.product,
+        "manufacturer" => &mut device.manufacturer,
+        "model" => &mut device.model,
+        "serial" => &mut device.serial,
+        _ => return None,
+    })
+}
+
+/// Resolves a single identity property, falling back to `fallback` when the
+/// device exposes neither the plain nor the `*_for_attestation` property.
+fn device_identity_property(property: &str, fallback: &str) -> String {
+    let resolved = attested_property_value(property);
+    if resolved.trim().is_empty() {
+        fallback.to_string()
+    } else {
+        resolved
+    }
+}
+
+/// Syncs the `[device]` identity fields to the values Android will attest, unless
+/// the user has pinned them with `overrideDeviceProperties`. A field is only
+/// overwritten when the resolved property is non-empty and actually differs, so a
+/// device that cannot read a property keeps its configured value. Returns the
+/// names of the fields that changed. Device-agnostic: a field with no
+/// `*_for_attestation` override simply resolves to the plain property.
+pub(crate) fn resolve_device_identity(device: &mut DeviceProperty) -> Vec<&'static str> {
+    if device.override_device_properties {
+        return Vec::new();
+    }
+    let mut changed = Vec::new();
+    for &(field, property) in DEVICE_IDENTITY_FIELDS {
+        let resolved = attested_property_value(property);
+        let Some(slot) = device_identity_field_mut(device, field) else {
+            continue;
+        };
+        if !resolved.trim().is_empty() && *slot != resolved {
+            *slot = resolved;
+            changed.push(field);
+        }
+    }
+    changed
+}
 
 const REPLACE_SAVE_RETRY_INTERVAL: std::time::Duration = std::time::Duration::from_millis(100);
 const REPLACE_SAVE_RETRY_LIMIT: usize = 10;
@@ -293,13 +370,19 @@ fn parse_config_file(contents: &str, allow_migration: bool) -> Result<ParsedConf
         0 if allow_migration => {
             upgrade_v0_to_v1(&mut table)?;
             upgrade_v1_to_v2(&mut table)?;
+            upgrade_v2_to_v3(&mut table)?;
             true
         }
         CONFIG_VERSION_V1 if allow_migration => {
             upgrade_v1_to_v2(&mut table)?;
+            upgrade_v2_to_v3(&mut table)?;
             true
         }
-        0 | CONFIG_VERSION_V1 => {
+        CONFIG_VERSION_V2 if allow_migration => {
+            upgrade_v2_to_v3(&mut table)?;
+            true
+        }
+        0 | CONFIG_VERSION_V1 | CONFIG_VERSION_V2 => {
             return Err(anyhow!(
                 "config version {version} requires a keymint restart to migrate"
             ))
@@ -366,6 +449,36 @@ fn upgrade_v1_to_v2(table: &mut toml::Table) -> Result<()> {
         "os_version".to_string(),
         toml::Value::String("auto".to_string()),
     );
+    table.insert(
+        "version".to_string(),
+        toml::Value::Integer(i64::from(CONFIG_VERSION_V2)),
+    );
+    Ok(())
+}
+
+fn upgrade_v2_to_v3(table: &mut toml::Table) -> Result<()> {
+    if let Some(device) = table.get_mut("device").and_then(toml::Value::as_table_mut) {
+        device
+            .entry("overrideDeviceProperties".to_string())
+            .or_insert_with(|| toml::Value::Boolean(false));
+
+        let pinned = device
+            .get("overrideDeviceProperties")
+            .and_then(toml::Value::as_bool)
+            .unwrap_or(false);
+        if !pinned {
+            for &(field, property) in DEVICE_IDENTITY_FIELDS {
+                let resolved = attested_property_value(property);
+                if resolved.trim().is_empty() {
+                    continue;
+                }
+                if device.get(field).and_then(toml::Value::as_str) != Some(resolved.as_str()) {
+                    log::info!("device.{field} synced to attested value in v3 migration");
+                    device.insert(field.to_string(), toml::Value::String(resolved));
+                }
+            }
+        }
+    }
     table.insert(
         "version".to_string(),
         toml::Value::Integer(i64::from(CURRENT_CONFIG_VERSION)),
@@ -915,6 +1028,8 @@ pub struct DeviceProperty {
     pub manufacturer: String,
     pub model: String,
     pub serial: String,
+    #[serde(rename = "overrideDeviceProperties", default)]
+    pub override_device_properties: bool,
     #[serde(rename = "overrideTelephonyProperties", default)]
     pub override_telephony_properties: bool,
     pub meid: String,
@@ -925,12 +1040,13 @@ pub struct DeviceProperty {
 impl Default for DeviceProperty {
     fn default() -> Self {
         Self {
-            brand: rsproperties::get_or("ro.product.brand", "google".to_string()),
-            device: rsproperties::get_or("ro.product.device", "generic".to_string()),
-            product: rsproperties::get_or("ro.product.name", "mainline".to_string()),
-            manufacturer: rsproperties::get_or("ro.product.manufacturer", "google".to_string()),
-            model: rsproperties::get_or("ro.product.model", "mainline".to_string()),
-            serial: rsproperties::get_or("ro.serialno", "f7bade12".to_string()),
+            brand: device_identity_property("ro.product.brand", "google"),
+            device: device_identity_property("ro.product.device", "generic"),
+            product: device_identity_property("ro.product.name", "mainline"),
+            manufacturer: device_identity_property("ro.product.manufacturer", "google"),
+            model: device_identity_property("ro.product.model", "mainline"),
+            serial: device_identity_property("ro.serialno", "f7bade12"),
+            override_device_properties: false,
             override_telephony_properties: false,
             meid: String::new(),
             imei: String::new(),
@@ -1329,6 +1445,56 @@ imei2 = ""
     }
 
     #[test]
+    fn resolve_device_identity_respects_override_and_reports_changes() {
+        // Off-device the identity properties are unreadable, so an unpinned block
+        // is left as-is and nothing is reported as changed.
+        let mut device = DeviceProperty {
+            product: "custom_product".to_string(),
+            ..DeviceProperty::default()
+        };
+        let before = device.clone();
+        assert!(resolve_device_identity(&mut device).is_empty());
+        assert_eq!(device, before);
+
+        // A pinned block is never inspected at all.
+        let mut pinned = DeviceProperty {
+            override_device_properties: true,
+            model: "whatever".to_string(),
+            ..DeviceProperty::default()
+        };
+        let pinned_before = pinned.clone();
+        assert!(resolve_device_identity(&mut pinned).is_empty());
+        assert_eq!(pinned, pinned_before);
+    }
+
+    #[test]
+    fn config_v2_migration_adds_override_flag_and_bumps_version() {
+        let mut table: toml::Table =
+            toml::from_str(&toml::to_string_pretty(&ConfigFile::default()).unwrap()).unwrap();
+        table.insert(
+            "version".to_string(),
+            toml::Value::Integer(i64::from(CONFIG_VERSION_V2)),
+        );
+        let device = table
+            .get_mut("device")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap();
+        device.remove("overrideDeviceProperties");
+        device.insert(
+            "product".to_string(),
+            toml::Value::String("custom_product".to_string()),
+        );
+
+        let parsed = parse_config_file(&toml::to_string_pretty(&table).unwrap(), true).unwrap();
+        assert!(parsed.migrated);
+        assert_eq!(parsed.config_file.version, CURRENT_CONFIG_VERSION);
+        assert!(!parsed.config_file.device.override_device_properties);
+        // Identity properties are unreadable off-device, so the migration leaves
+        // the stored value untouched rather than blanking it.
+        assert_eq!(parsed.config_file.device.product, "custom_product");
+    }
+
+    #[test]
     fn bootstrap_uses_latest_v2_instead_of_stale_migration_snapshot() {
         let temp_dir = tempfile::tempdir().unwrap();
         let path = temp_dir.path().join("config.toml");
@@ -1378,7 +1544,7 @@ imei2 = ""
             assert!(config_version(&table).is_err());
         }
 
-        for version in [0, CONFIG_VERSION_V1] {
+        for version in [0, CONFIG_VERSION_V1, CONFIG_VERSION_V2] {
             let mut table: toml::Table =
                 toml::from_str(&toml::to_string_pretty(&ConfigFile::default()).unwrap()).unwrap();
             table.insert(

@@ -405,6 +405,7 @@ mod tests {
             manufacturer: "Google".to_string(),
             model: "Pixel".to_string(),
             serial: "serial".to_string(),
+            override_device_properties: false,
             override_telephony_properties: false,
             meid: String::new(),
             imei: String::new(),

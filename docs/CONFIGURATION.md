@@ -70,8 +70,8 @@ examples; keep the values from the active file unless you intend to change the
 reported identity.
 
 ```toml
-# Configuration format. Keep this at 2.
-version = 2
+# Configuration format. Keep this at 3.
+version = 3
 
 [main]
 # The supported service connection. Keep this value unchanged.
@@ -113,6 +113,8 @@ product = "KEEP_THE_VALUE_FROM_THE_ACTIVE_FILE"
 manufacturer = "KEEP_THE_VALUE_FROM_THE_ACTIVE_FILE"
 model = "KEEP_THE_VALUE_FROM_THE_ACTIVE_FILE"
 serial = "KEEP_THE_VALUE_FROM_THE_ACTIVE_FILE"
+# false keeps the fields above in sync with the values the OS attests.
+overrideDeviceProperties = false
 # false fills only empty telephony fields from the device when available.
 overrideTelephonyProperties = false
 # Empty optional identifiers are valid; do not invent missing values.
@@ -126,17 +128,19 @@ imei2 = ""
 #### `version`
 
 This identifies the configuration format. The supported value is the integer
-`2`. It is not an Android version or an OMK release number. Do not increment it;
+`3`. It is not an Android version or an OMK release number. Do not increment it;
 the current file should keep this value unchanged. Live reload rejects other
 values and keeps the last valid runtime configuration.
 
-At keymint startup, a missing `version` is treated as `0`. Versions `0` and `1`
-are migrated in place to `2` before the service starts, and `os_version` is set
-to `"auto"` so later Android upgrades are detected on the next keymint start.
-Startup also removes the obsolete `trust_record`. For version `0`, missing
-patch-level fields inherit the configured `security_patch`. Other configured
-and unknown values are preserved. Migration is not performed during live
-reload, so restart keymint to migrate an older file. An unsupported future
+At keymint startup, a missing `version` is treated as `0`. Versions `0`, `1`,
+and `2` are migrated in place to `3` before the service starts: `os_version` is
+set to `"auto"` so later Android upgrades are detected on the next keymint
+start, `overrideDeviceProperties` is added (defaulting to `false`), and the
+`[device]` identity fields are synced to the values the OS attests unless that
+flag is `true`. Startup also removes the obsolete `trust_record`. For version
+`0`, missing patch-level fields inherit the configured `security_patch`. Other
+configured and unknown values are preserved. Migration is not performed during
+live reload, so restart keymint to migrate an older file. An unsupported future
 version is never overwritten.
 
 ### `[main]`
@@ -344,34 +348,58 @@ attestation IDs. These values are personal data. Use the values already
 generated for the device, and restart keymint after changing this section so
 the one-shot attestation-ID snapshot is rebuilt.
 
+Android derives the value it puts in a device-ID attestation request from
+`ro.product.<field>_for_attestation` when that property is set, and otherwise
+from the plain `ro.product.<field>` property. (Some builds — betas in
+particular — ship a `_for_attestation` value that differs from the plain one so
+the request still matches the factory-provisioned IDs.) For the request to
+succeed, OMK has to attest the same value.
+
+So unless `overrideDeviceProperties` is `true`, OMK keeps `brand`, `device`,
+`product`, `manufacturer`, `model`, and `serial` in sync with those resolved
+property values: it refreshes them in `config.toml` on the next keymint restart
+(the `v3` config migration) and resolves them again when it builds the
+attestation-ID snapshot, so a stale stored value never blocks attestation. A
+field is only rewritten when the resolved property is readable and actually
+differs. This logic is device-agnostic — a field with no `_for_attestation`
+override simply resolves to the plain property.
+
+#### `overrideDeviceProperties`
+
+With the recommended value `false`, OMK keeps the six identity fields above in
+sync with the values Android attests (see above). Set it to `true` to pin the
+`[device]` identity fields exactly as written and stop OMK from touching them —
+only needed when you are deliberately presenting an identity that differs from
+this device's own `ro.product.*` / `ro.serialno` properties.
+
 #### `brand`
 
-The product brand reported in an attestation ID request, normally based on
-`ro.product.brand` when a new configuration is created.
+The product brand reported in an attestation ID request, from
+`ro.product.brand_for_attestation` or `ro.product.brand`.
 
 #### `device`
 
-The device code name reported in an attestation ID request, normally based on
-`ro.product.device`.
+The device code name reported in an attestation ID request, from
+`ro.product.device_for_attestation` or `ro.product.device`.
 
 #### `product`
 
-The product name reported in an attestation ID request, normally based on
-`ro.product.name`.
+The product name reported in an attestation ID request, from
+`ro.product.name_for_attestation` or `ro.product.name`.
 
 #### `manufacturer`
 
-The manufacturer name reported in an attestation ID request, normally based on
-`ro.product.manufacturer`.
+The manufacturer name reported in an attestation ID request, from
+`ro.product.manufacturer_for_attestation` or `ro.product.manufacturer`.
 
 #### `model`
 
-The model name reported in an attestation ID request, normally based on
-`ro.product.model`.
+The model name reported in an attestation ID request, from
+`ro.product.model_for_attestation` or `ro.product.model`.
 
 #### `serial`
 
-The device serial reported in an attestation ID request, normally based on
+The device serial reported in an attestation ID request, from
 `ro.serialno`. Treat it as private information and redact it from reports.
 
 #### `overrideTelephonyProperties`

@@ -33,7 +33,7 @@ impl RetrieveAttestationIds for AttestationIdMgr {
         let guard = config()
             .read()
             .map_err(|_| km_err!(UnknownError, "config lock poisoned"))?;
-        let device = if needs_resolution(&guard.device) {
+        let mut device = if needs_resolution(&guard.device) {
             drop(guard);
             match crate::plat::device_ids::resolve_runtime_device_ids() {
                 Ok(Some(device)) => device,
@@ -46,6 +46,20 @@ impl RetrieveAttestationIds for AttestationIdMgr {
         } else {
             guard.device.clone()
         };
+
+        // Attest the same identity values Android sends in the request: the
+        // `ro.product.<field>_for_attestation` property when set, else the plain
+        // property. Keeps device-ID attestation working when the stored `[device]`
+        // block is stale (e.g. a build that gained a `_for_attestation` override),
+        // unless the user has pinned the block with `overrideDeviceProperties`.
+        let synced = crate::config::resolve_device_identity(&mut device);
+        if !synced.is_empty() {
+            log::warn!(
+                "synced attestation IDs to current device properties for: {}; \
+                 restart keymint to persist the change to config.toml",
+                synced.join(", ")
+            );
+        }
 
         let ids = AttestationIdInfo {
             brand: device.brand.into_bytes(),
