@@ -25,6 +25,12 @@ pub struct FilterDecision {
     pub packages: Vec<String>,
 }
 
+/// Whether `uid` is the `shell` (2000) or `root` (0) UID and `allow_shell_caller`
+/// is enabled, i.e. it is admitted regardless of package identity.
+pub fn is_allowed_shell_caller(config: &FilterConfig, uid: u32) -> bool {
+    config.allow_shell_caller && (uid == AID_ROOT || uid == AID_SHELL)
+}
+
 pub fn evaluate(
     scoop: &[String],
     config: &FilterConfig,
@@ -46,7 +52,7 @@ pub fn evaluate(
     // package identity of their own. Used by KeyAttestation's "Use Shizuku" mode,
     // `rish`, and `adb shell`; lets those testing paths reach OMK instead of the
     // real System keymint. Bypasses the Android-package block on purpose.
-    if config.allow_shell_caller && (uid == AID_ROOT || uid == AID_SHELL) {
+    if is_allowed_shell_caller(config, uid) {
         return FilterDecision {
             allowed: true,
             reason: FilterReason::Allowed,

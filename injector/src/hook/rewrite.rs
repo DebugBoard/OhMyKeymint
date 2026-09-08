@@ -97,6 +97,13 @@ fn evaluate_caller(
         return preflight;
     }
 
+    // The `shell`/`root` UIDs admitted by `allow_shell_caller` have no package
+    // identity, so skip the resolution IPC (it would just log "No package for
+    // uid") and take the preflight allow decision as final.
+    if preflight.allowed && filter::is_allowed_shell_caller(&cfg.filter, uid) {
+        return preflight;
+    }
+
     let package_resolution = {
         let _guard = BypassGuard::enter();
         ipc::resolve_packages_for_uid(uid)

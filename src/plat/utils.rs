@@ -139,8 +139,33 @@ pub fn get_keystore_service() -> anyhow::Result<rsbinder::Strong<dyn IKeystoreSe
     Ok(service)
 }
 
+/// How long a resolved attestation application ID stays cached. Short enough that
+/// an app update is picked up quickly, long enough to spare the ~200ms
+/// `getKeyAttestationApplicationId` binder call when a caller generates several
+/// attested keys back-to-back (as key-attestation test apps do).
+const AAID_CACHE_TTL: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// uid -> (resolved-at, encoded attestation application ID).
+type AaidCache = std::collections::HashMap<u32, (std::time::Instant, Vec<u8>)>;
+
+static AAID_CACHE: OnceLock<Mutex<AaidCache>> = OnceLock::new();
+
+fn aaid_cache() -> &'static Mutex<AaidCache> {
+    AAID_CACHE.get_or_init(Default::default)
+}
+
 pub fn get_aaid(uid: u32) -> anyhow::Result<Vec<u8>> {
     debug!("resolving AAID uid={}", uid);
+
+    if let Ok(cache) = aaid_cache().lock() {
+        if let Some((cached_at, encoded)) = cache.get(&uid) {
+            if cached_at.elapsed() < AAID_CACHE_TTL {
+                debug!("using cached AAID uid={}", uid);
+                return Ok(encoded.clone());
+            }
+        }
+    }
+
     let application_id = if (uid == 0) || (uid == 1000) {
         let info = KeyAttestationPackageInfo {
             packageName: "AndroidSystem".to_string(),
@@ -156,7 +181,11 @@ pub fn get_aaid(uid: u32) -> anyhow::Result<Vec<u8>> {
 
     debug!("resolved application_id={:?}", application_id);
 
-    encode_application_id(application_id)
+    let encoded = encode_application_id(application_id)?;
+    if let Ok(mut cache) = aaid_cache().lock() {
+        cache.insert(uid, (std::time::Instant::now(), encoded.clone()));
+    }
+    Ok(encoded)
 }
 
 fn get_application_id_from_provider(uid: u32) -> anyhow::Result<KeyAttestationApplicationId> {

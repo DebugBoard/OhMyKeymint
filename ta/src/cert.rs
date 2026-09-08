@@ -626,6 +626,43 @@ impl AttestationIds<'_> {
         *self == AttestationIds::default()
     }
 
+    /// Substitute the provisioned value for a requested telephony identifier that
+    /// would otherwise fail [`check_match`]. `serial`, `imei`, `imei2`, and `meid`
+    /// come from `Build.getSerial()` / `TelephonyManager`, which OMK does not
+    /// control, so without this a deployment that presents a different telephony
+    /// identity (or simply has a stale live value) fails the whole attestation.
+    /// A field is only rewritten when the provisioned value is non-empty and the
+    /// requested value matches neither provisioned IMEI (so legitimate IMEI
+    /// reordering still passes through unchanged). Non-telephony IDs (brand,
+    /// device, product, manufacturer, model) are left untouched — those are kept
+    /// in sync with `ro.product.*` on the OMK side instead.
+    fn apply_provisioned_telephony_ids(&mut self, provisioned: &crate::AttestationIdInfo) {
+        if let Some(serial) = self.serial.as_deref() {
+            if !provisioned.serial.is_empty() && serial != provisioned.serial {
+                self.serial = Some(provisioned.serial.clone().into());
+            }
+        }
+        if let Some(imei) = self.imei.as_deref() {
+            if !provisioned.imei.is_empty() && imei != provisioned.imei && imei != provisioned.imei2
+            {
+                self.imei = Some(provisioned.imei.clone().into());
+            }
+        }
+        if let Some(imei2) = self.imei2.as_deref() {
+            if !provisioned.imei2.is_empty()
+                && imei2 != provisioned.imei2
+                && imei2 != provisioned.imei
+            {
+                self.imei2 = Some(provisioned.imei2.clone().into());
+            }
+        }
+        if let Some(meid) = self.meid.as_deref() {
+            if !provisioned.meid.is_empty() && meid != provisioned.meid {
+                self.meid = Some(provisioned.meid.clone().into());
+            }
+        }
+    }
+
     fn check_match(&self, wanted: &crate::AttestationIdInfo) -> Result<(), Error> {
         if self
             .brand
@@ -724,11 +761,14 @@ impl<'a> AuthorizationList<'a> {
         app_id: Option<&'a [u8]>,
         additional_attestation_info: &'a [KeyParam],
     ) -> Result<Self, Error> {
-        let requested_ids = AttestationIds::new_from_key_params(keygen_params)?;
+        let mut requested_ids = AttestationIds::new_from_key_params(keygen_params)?;
         if !requested_ids.is_empty() {
             match attestation_ids {
                 None => return Err(km_err!(CannotAttestIds, "no attestation IDs provisioned")),
-                Some(attestation_ids) => requested_ids.check_match(attestation_ids)?,
+                Some(attestation_ids) => {
+                    requested_ids.apply_provisioned_telephony_ids(attestation_ids);
+                    requested_ids.check_match(attestation_ids)?;
+                }
             }
         }
         let encoded_rot = if let Some(rot) = rot_info {
@@ -1875,6 +1915,52 @@ mod tests {
             AuthorizationList::new(&[], &keygen_params, Some(&attestation_ids), None, None, &[])
                 .unwrap_err();
 
+        assert!(matches!(
+            error.kind(),
+            CommonErrorKind::Hal(ErrorCode::CannotAttestIds, _)
+        ));
+    }
+
+    #[test]
+    fn test_authz_list_substitutes_provisioned_telephony_ids() {
+        let attestation_ids = AttestationIdInfo {
+            serial: b"PROVISIONED-SERIAL".to_vec(),
+            imei: b"111111111111111".to_vec(),
+            meid: b"A0000000000001".to_vec(),
+            ..Default::default()
+        };
+        let keygen_params = [
+            KeyParam::AttestationIdSerial(b"live-serial".to_vec()),
+            KeyParam::AttestationIdImei(b"999999999999999".to_vec()),
+            KeyParam::AttestationIdMeid(b"BFFFFFFFFFFFFF".to_vec()),
+        ];
+        let authz_list =
+            AuthorizationList::new(&[], &keygen_params, Some(&attestation_ids), None, None, &[])
+                .unwrap();
+
+        assert_eq!(
+            authz_list.ids.serial.as_deref(),
+            Some(b"PROVISIONED-SERIAL".as_slice())
+        );
+        assert_eq!(
+            authz_list.ids.imei.as_deref(),
+            Some(b"111111111111111".as_slice())
+        );
+        assert_eq!(
+            authz_list.ids.meid.as_deref(),
+            Some(b"A0000000000001".as_slice())
+        );
+    }
+
+    #[test]
+    fn test_authz_list_keeps_telephony_id_when_not_provisioned() {
+        // Nothing provisioned for serial: a genuine mismatch still fails rather
+        // than silently attesting an empty value.
+        let attestation_ids = AttestationIdInfo::default();
+        let keygen_params = [KeyParam::AttestationIdSerial(b"live-serial".to_vec())];
+        let error =
+            AuthorizationList::new(&[], &keygen_params, Some(&attestation_ids), None, None, &[])
+                .unwrap_err();
         assert!(matches!(
             error.kind(),
             CommonErrorKind::Hal(ErrorCode::CannotAttestIds, _)

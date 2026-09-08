@@ -1445,30 +1445,34 @@ imei2 = ""
     }
 
     #[test]
-    fn resolve_device_identity_respects_override_and_reports_changes() {
-        // Off-device the identity properties are unreadable, so an unpinned block
-        // is left as-is and nothing is reported as changed.
-        let mut device = DeviceProperty {
-            product: "custom_product".to_string(),
-            ..DeviceProperty::default()
-        };
-        let before = device.clone();
-        assert!(resolve_device_identity(&mut device).is_empty());
-        assert_eq!(device, before);
-
-        // A pinned block is never inspected at all.
+    fn resolve_device_identity_skips_pinned_block() {
+        // A pinned block is never inspected, regardless of what the device
+        // properties resolve to in this environment.
         let mut pinned = DeviceProperty {
             override_device_properties: true,
-            model: "whatever".to_string(),
+            brand: "custom_brand".to_string(),
+            model: "custom_model".to_string(),
+            serial: "custom_serial".to_string(),
             ..DeviceProperty::default()
         };
-        let pinned_before = pinned.clone();
+        let before = pinned.clone();
         assert!(resolve_device_identity(&mut pinned).is_empty());
-        assert_eq!(pinned, pinned_before);
+        assert_eq!(pinned, before);
     }
 
     #[test]
-    fn config_v2_migration_adds_override_flag_and_bumps_version() {
+    fn resolve_device_identity_is_idempotent() {
+        // Whatever the environment resolves to, a second pass is a no-op: every
+        // field already holds its attested value after the first.
+        let mut device = DeviceProperty::default();
+        resolve_device_identity(&mut device);
+        let after_first = device.clone();
+        assert!(resolve_device_identity(&mut device).is_empty());
+        assert_eq!(device, after_first);
+    }
+
+    #[test]
+    fn config_v2_migration_adds_flag_and_leaves_pinned_identity_alone() {
         let mut table: toml::Table =
             toml::from_str(&toml::to_string_pretty(&ConfigFile::default()).unwrap()).unwrap();
         table.insert(
@@ -1479,7 +1483,12 @@ imei2 = ""
             .get_mut("device")
             .and_then(toml::Value::as_table_mut)
             .unwrap();
-        device.remove("overrideDeviceProperties");
+        // A v2 file has no overrideDeviceProperties key; a user who had pinned
+        // identity would have set it, so simulate the pinned case explicitly.
+        device.insert(
+            "overrideDeviceProperties".to_string(),
+            toml::Value::Boolean(true),
+        );
         device.insert(
             "product".to_string(),
             toml::Value::String("custom_product".to_string()),
@@ -1488,10 +1497,28 @@ imei2 = ""
         let parsed = parse_config_file(&toml::to_string_pretty(&table).unwrap(), true).unwrap();
         assert!(parsed.migrated);
         assert_eq!(parsed.config_file.version, CURRENT_CONFIG_VERSION);
-        assert!(!parsed.config_file.device.override_device_properties);
-        // Identity properties are unreadable off-device, so the migration leaves
-        // the stored value untouched rather than blanking it.
+        assert!(parsed.config_file.device.override_device_properties);
         assert_eq!(parsed.config_file.device.product, "custom_product");
+    }
+
+    #[test]
+    fn config_v2_migration_defaults_override_flag_to_false() {
+        let mut table: toml::Table =
+            toml::from_str(&toml::to_string_pretty(&ConfigFile::default()).unwrap()).unwrap();
+        table.insert(
+            "version".to_string(),
+            toml::Value::Integer(i64::from(CONFIG_VERSION_V2)),
+        );
+        table
+            .get_mut("device")
+            .and_then(toml::Value::as_table_mut)
+            .unwrap()
+            .remove("overrideDeviceProperties");
+
+        let parsed = parse_config_file(&toml::to_string_pretty(&table).unwrap(), true).unwrap();
+        assert!(parsed.migrated);
+        assert_eq!(parsed.config_file.version, CURRENT_CONFIG_VERSION);
+        assert!(!parsed.config_file.device.override_device_properties);
     }
 
     #[test]
