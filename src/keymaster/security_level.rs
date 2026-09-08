@@ -597,6 +597,42 @@ impl KeystoreSecurityLevel {
             ))?;
         }
 
+        // With `[device].attestTelephonyIds`, attest the configured telephony
+        // identifiers whenever device-property attestation is requested, even
+        // though the caller did not (Android only adds these from a privileged
+        // caller via Build.getSerial()/TelephonyManager). This runs after the
+        // permission check on purpose: it presents a consistent identity to
+        // callers that cannot reach that privileged path.
+        if params.iter().any(|kp| kp.tag == Tag::ATTESTATION_CHALLENGE)
+            && params.iter().any(|kp| kp.tag == Tag::ATTESTATION_ID_BRAND)
+        {
+            if let Ok(cfg) = crate::config::config().read() {
+                let device = &cfg.device;
+                if device.attest_telephony_ids {
+                    let hal_v3 = self.hw_info.versionNumber >= 300;
+                    let injectable = [
+                        (Tag::ATTESTATION_ID_SERIAL, device.serial.as_str(), true),
+                        (Tag::ATTESTATION_ID_IMEI, device.imei.as_str(), true),
+                        (
+                            Tag::ATTESTATION_ID_SECOND_IMEI,
+                            device.imei2.as_str(),
+                            hal_v3,
+                        ),
+                        (Tag::ATTESTATION_ID_MEID, device.meid.as_str(), true),
+                    ];
+                    for (tag, value, supported) in injectable {
+                        if supported && !value.is_empty() && !params.iter().any(|kp| kp.tag == tag)
+                        {
+                            result.push(KeyParameter {
+                                tag,
+                                value: KeyParameterValue::Blob(value.as_bytes().to_vec()),
+                            });
+                        }
+                    }
+                }
+            }
+        }
+
         // If we are generating/importing an asymmetric key, we need to make sure
         // that NOT_BEFORE and NOT_AFTER are present.
         match params.iter().find(|kp| kp.tag == Tag::ALGORITHM) {

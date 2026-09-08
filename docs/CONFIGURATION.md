@@ -117,6 +117,8 @@ serial = "KEEP_THE_VALUE_FROM_THE_ACTIVE_FILE"
 overrideDeviceProperties = false
 # false fills only empty telephony fields from the device when available.
 overrideTelephonyProperties = false
+# true also attests serial/imei/imei2/meid on every device-property attestation.
+attestTelephonyIds = false
 # Empty optional identifiers are valid; do not invent missing values.
 meid = ""
 imei = ""
@@ -412,6 +414,23 @@ each successfully discovered value back to the active `config.toml`.
 With `true`, OMK skips telephony discovery and uses the three configured fields
 exactly as written, including empty strings. Use this only when intentionally
 pinning the values.
+
+#### `attestTelephonyIds`
+
+With the default `false`, `serial`, `imei`, `imei2`, and `meid` are attested
+only when an app explicitly asks for them — which Android permits solely for
+privileged callers (device/profile owners, or a shell/system UID via
+`Build.getSerial()` / `TelephonyManager`).
+
+With `true`, OMK adds every configured, non-empty telephony identifier to the
+attestation certificate on **any** request that already includes device
+properties (`setDevicePropertiesAttestationIncluded`), regardless of caller
+permission. This lets an unprivileged caller — or a tool running as root, which
+Android refuses `Build.getSerial()` to — obtain a certificate carrying these
+IDs. Real hardware never does this for an unprivileged request, so a verifier
+that models AOSP behaviour can treat the combination as anomalous; enable it
+only when you specifically need the IDs present. `imei2` is added only on
+KeyMint 3+ (HAL v300).
 
 #### `imei`
 

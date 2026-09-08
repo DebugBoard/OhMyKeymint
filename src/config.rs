@@ -1032,6 +1032,12 @@ pub struct DeviceProperty {
     pub override_device_properties: bool,
     #[serde(rename = "overrideTelephonyProperties", default)]
     pub override_telephony_properties: bool,
+    /// Also attest `serial`/`imei`/`imei2`/`meid` whenever device-property
+    /// attestation is requested, even though the caller did not (and could not)
+    /// ask for them. Lets a deployment present a full identity to callers that
+    /// cannot reach Android's privileged device-ID attestation path.
+    #[serde(rename = "attestTelephonyIds", default)]
+    pub attest_telephony_ids: bool,
     pub meid: String,
     pub imei: String,
     pub imei2: String,
@@ -1048,6 +1054,7 @@ impl Default for DeviceProperty {
             serial: device_identity_property("ro.serialno", "f7bade12"),
             override_device_properties: false,
             override_telephony_properties: false,
+            attest_telephony_ids: false,
             meid: String::new(),
             imei: String::new(),
             imei2: String::new(),

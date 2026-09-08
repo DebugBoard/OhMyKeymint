@@ -407,6 +407,7 @@ mod tests {
             serial: "serial".to_string(),
             override_device_properties: false,
             override_telephony_properties: false,
+            attest_telephony_ids: false,
             meid: String::new(),
             imei: String::new(),
             imei2: String::new(),
