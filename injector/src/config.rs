@@ -45,6 +45,7 @@ pub struct FilterConfig {
     pub deny_packages: Vec<String>,
     pub block_android_package: bool,
     pub allow_unknown_package: bool,
+    pub allow_shell_caller: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -105,6 +106,7 @@ impl Default for FilterConfig {
             deny_packages: Vec::new(),
             block_android_package: true,
             allow_unknown_package: false,
+            allow_shell_caller: false,
         }
     }
 }

@@ -98,6 +98,30 @@ fn root_follows_android_package_policy() {
 }
 
 #[test]
+fn allow_shell_caller_admits_root_and_shell_only() {
+    let mut config = base_config();
+    config.allow_shell_caller = true;
+
+    // root (0) and shell (2000) reach OMK despite block_android_package.
+    for uid in [0, 2000] {
+        let decision = evaluate(&base_scope(), &config, uid, PackageResolution::Unknown);
+        assert!(decision.allowed, "uid {uid} should be allowed");
+        assert_eq!(decision.reason, FilterReason::Allowed);
+    }
+
+    // Other core identities (e.g. system 1000) are still rejected.
+    let decision = evaluate(&base_scope(), &config, 1000, PackageResolution::Unknown);
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason, FilterReason::RejectedAndroidPackage);
+
+    // The flag is opt-in: without it, root stays on System.
+    config.allow_shell_caller = false;
+    let decision = evaluate(&base_scope(), &config, 0, PackageResolution::Unknown);
+    assert!(!decision.allowed);
+    assert_eq!(decision.reason, FilterReason::RejectedAndroidPackage);
+}
+
+#[test]
 fn android_prefixed_package_in_scope_is_allowed() {
     let config = base_config();
     let scope = vec!["com.android.vending".to_string()];

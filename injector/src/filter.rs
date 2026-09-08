@@ -1,4 +1,4 @@
-use kmr_common::consts::{AID_APP_START, AID_USER_OFFSET};
+use kmr_common::consts::{AID_APP_START, AID_ROOT, AID_SHELL, AID_USER_OFFSET};
 
 use crate::config::FilterConfig;
 
@@ -35,6 +35,21 @@ pub fn evaluate(
         return FilterDecision {
             allowed: true,
             reason: FilterReason::Disabled,
+            packages: match resolution {
+                PackageResolution::Known(packages) => packages,
+                PackageResolution::Unknown => Vec::new(),
+            },
+        };
+    }
+
+    // Explicit opt-in for the `shell` (2000) and `root` (0) UIDs, which have no
+    // package identity of their own. Used by KeyAttestation's "Use Shizuku" mode,
+    // `rish`, and `adb shell`; lets those testing paths reach OMK instead of the
+    // real System keymint. Bypasses the Android-package block on purpose.
+    if config.allow_shell_caller && (uid == AID_ROOT || uid == AID_SHELL) {
+        return FilterDecision {
+            allowed: true,
+            reason: FilterReason::Allowed,
             packages: match resolution {
                 PackageResolution::Known(packages) => packages,
                 PackageResolution::Unknown => Vec::new(),

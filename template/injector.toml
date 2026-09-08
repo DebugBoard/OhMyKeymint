@@ -21,6 +21,7 @@ enabled = true
 deny_packages = []
 block_android_package = true
 allow_unknown_package = false
+allow_shell_caller = false
 
 [intercept]
 get_security_level = true

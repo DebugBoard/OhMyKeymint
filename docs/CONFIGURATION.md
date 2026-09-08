@@ -474,6 +474,9 @@ deny_packages = []
 block_android_package = true
 # Reject callers whose package name cannot be found. Keep false.
 allow_unknown_package = false
+# Route the shell (2000) and root (0) UIDs through OMK. Only for Shizuku/adb
+# testing; keep false otherwise.
+allow_shell_caller = false
 
 [intercept]
 # Route each named KeyStore operation to OMK for an allowed caller.
@@ -552,12 +555,14 @@ unrecognized string does not make the TOML file invalid; the injector uses
 
 With the filter enabled, OMK evaluates a caller in this order:
 
-1. Reject a core Android or system identity when
+1. Allow the `shell` (2000) and `root` (0) UIDs outright when
+   `allow_shell_caller = true`.
+2. Reject a core Android or system identity when
    `block_android_package = true`.
-2. If its package names cannot be resolved, follow `allow_unknown_package`.
-3. Reject the whole identity if any resolved package is in `deny_packages`.
-4. Reject it if none of its resolved packages is in `scoop`.
-5. Otherwise allow it to use the enabled `[intercept]` routes.
+3. If its package names cannot be resolved, follow `allow_unknown_package`.
+4. Reject the whole identity if any resolved package is in `deny_packages`.
+5. Reject it if none of its resolved packages is in `scoop`.
+6. Otherwise allow it to use the enabled `[intercept]` routes.
 
 This order matters for packages that share an Android identity: a deny rule
 wins over a matching entry in `scoop`.
@@ -594,6 +599,18 @@ It also rejects resolved package names equal to `android` or beginning with
 
 Keep this setting `true`. Setting it to `false` only removes this safety check;
 the remaining filter rules still apply.
+
+#### `allow_shell_caller`
+
+This controls the `shell` (UID 2000) and `root` (UID 0) callers, which have no
+package identity of their own. `false`, the default, leaves them on System.
+`true` routes them through OMK, bypassing the Android-package block for those
+two UIDs only — `system` (1000) and every other core identity stay rejected.
+
+Enable it only to test with tools that run keystore code from a shell or root
+context, such as KeyAttestation's "Use Shizuku" mode, `rish`, or `adb shell`.
+Leave it `false` for normal use: it exposes OMK to any root/shell keystore
+traffic on the device.
 
 #### `allow_unknown_package`
 
