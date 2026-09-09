@@ -97,9 +97,9 @@ fn evaluate_caller(
         return preflight;
     }
 
-    // The `shell`/`root` UIDs admitted by `allow_shell_caller` have no package
-    // identity, so skip the resolution IPC (it would just log "No package for
-    // uid") and take the preflight allow decision as final.
+    // The `shell` UID admitted by `allow_shell_caller` is allowed regardless of
+    // its packages, so skip the resolution IPC and take the preflight allow
+    // decision as final.
     if preflight.allowed && filter::is_allowed_shell_caller(&cfg.filter, uid) {
         return preflight;
     }

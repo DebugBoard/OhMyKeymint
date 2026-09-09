@@ -1,4 +1,4 @@
-use kmr_common::consts::{AID_APP_START, AID_ROOT, AID_SHELL, AID_USER_OFFSET};
+use kmr_common::consts::{AID_APP_START, AID_SHELL, AID_USER_OFFSET};
 
 use crate::config::FilterConfig;
 
@@ -25,10 +25,15 @@ pub struct FilterDecision {
     pub packages: Vec<String>,
 }
 
-/// Whether `uid` is the `shell` (2000) or `root` (0) UID and `allow_shell_caller`
-/// is enabled, i.e. it is admitted regardless of package identity.
+/// Whether `uid` is exactly the `shell` UID (2000) and `allow_shell_caller` is
+/// enabled, i.e. it is admitted regardless of package identity.
+///
+/// Deliberately does NOT cover `root` (UID 0): that UID belongs to `vold`,
+/// `init`, and other system daemons whose keystore traffic — CE-storage unlock
+/// in particular — must reach the real System keystore, not OMK. Routing UID 0
+/// to OMK leaves the device stuck at `RUNNING_LOCKED` after boot.
 pub fn is_allowed_shell_caller(config: &FilterConfig, uid: u32) -> bool {
-    config.allow_shell_caller && (uid == AID_ROOT || uid == AID_SHELL)
+    config.allow_shell_caller && uid == AID_SHELL
 }
 
 pub fn evaluate(
@@ -48,10 +53,11 @@ pub fn evaluate(
         };
     }
 
-    // Explicit opt-in for the `shell` (2000) and `root` (0) UIDs, which have no
-    // package identity of their own. Used by KeyAttestation's "Use Shizuku" mode,
-    // `rish`, and `adb shell`; lets those testing paths reach OMK instead of the
-    // real System keymint. Bypasses the Android-package block on purpose.
+    // Explicit opt-in for the `shell` UID (2000), which has no package identity
+    // of its own. Used by `adb shell`, `rish`, and Shizuku started over ADB;
+    // lets those testing paths reach OMK instead of the real System keymint.
+    // Bypasses the Android-package block on purpose. `root` (UID 0) is NOT
+    // covered — see `is_allowed_shell_caller`.
     if is_allowed_shell_caller(config, uid) {
         return FilterDecision {
             allowed: true,

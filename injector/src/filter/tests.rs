@@ -98,25 +98,26 @@ fn root_follows_android_package_policy() {
 }
 
 #[test]
-fn allow_shell_caller_admits_root_and_shell_only() {
+fn allow_shell_caller_admits_shell_uid_only() {
     let mut config = base_config();
     config.allow_shell_caller = true;
 
-    // root (0) and shell (2000) reach OMK despite block_android_package.
-    for uid in [0, 2000] {
+    // shell (2000) reaches OMK despite block_android_package.
+    let decision = evaluate(&base_scope(), &config, 2000, PackageResolution::Unknown);
+    assert!(decision.allowed);
+    assert_eq!(decision.reason, FilterReason::Allowed);
+
+    // root (0) is NOT admitted — it belongs to vold/init and must stay on
+    // System, or CE-storage unlock breaks. Same for system (1000).
+    for uid in [0, 1000] {
         let decision = evaluate(&base_scope(), &config, uid, PackageResolution::Unknown);
-        assert!(decision.allowed, "uid {uid} should be allowed");
-        assert_eq!(decision.reason, FilterReason::Allowed);
+        assert!(!decision.allowed, "uid {uid} must not be admitted");
+        assert_eq!(decision.reason, FilterReason::RejectedAndroidPackage);
     }
 
-    // Other core identities (e.g. system 1000) are still rejected.
-    let decision = evaluate(&base_scope(), &config, 1000, PackageResolution::Unknown);
-    assert!(!decision.allowed);
-    assert_eq!(decision.reason, FilterReason::RejectedAndroidPackage);
-
-    // The flag is opt-in: without it, root stays on System.
+    // The flag is opt-in: without it, shell stays on System.
     config.allow_shell_caller = false;
-    let decision = evaluate(&base_scope(), &config, 0, PackageResolution::Unknown);
+    let decision = evaluate(&base_scope(), &config, 2000, PackageResolution::Unknown);
     assert!(!decision.allowed);
     assert_eq!(decision.reason, FilterReason::RejectedAndroidPackage);
 }

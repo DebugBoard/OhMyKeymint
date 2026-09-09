@@ -493,8 +493,8 @@ deny_packages = []
 block_android_package = true
 # Reject callers whose package name cannot be found. Keep false.
 allow_unknown_package = false
-# Route the shell (2000) and root (0) UIDs through OMK. Only for Shizuku/adb
-# testing; keep false otherwise.
+# Route the shell UID (2000) through OMK. Only for ADB-shell / ADB-started
+# Shizuku testing; keep false otherwise.
 allow_shell_caller = false
 
 [intercept]
@@ -574,8 +574,7 @@ unrecognized string does not make the TOML file invalid; the injector uses
 
 With the filter enabled, OMK evaluates a caller in this order:
 
-1. Allow the `shell` (2000) and `root` (0) UIDs outright when
-   `allow_shell_caller = true`.
+1. Allow the `shell` UID (2000) outright when `allow_shell_caller = true`.
 2. Reject a core Android or system identity when
    `block_android_package = true`.
 3. If its package names cannot be resolved, follow `allow_unknown_package`.
@@ -621,15 +620,21 @@ the remaining filter rules still apply.
 
 #### `allow_shell_caller`
 
-This controls the `shell` (UID 2000) and `root` (UID 0) callers, which have no
-package identity of their own. `false`, the default, leaves them on System.
-`true` routes them through OMK, bypassing the Android-package block for those
-two UIDs only — `system` (1000) and every other core identity stay rejected.
+This controls the `shell` caller (UID 2000), which has no package identity of
+its own. `false`, the default, leaves it on System. `true` routes it through
+OMK, bypassing the Android-package block for UID 2000 only.
 
-Enable it only to test with tools that run keystore code from a shell or root
-context, such as KeyAttestation's "Use Shizuku" mode, `rish`, or `adb shell`.
-Leave it `false` for normal use: it exposes OMK to any root/shell keystore
-traffic on the device.
+**UID `root` (0) is never routed**, even with this flag on: that UID belongs to
+`vold`, `init`, and other system daemons, and `vold` in particular must reach
+the real System keystore to unlock Credential-Encrypted storage at boot —
+routing it to OMK leaves the device stuck at the lock screen with no app data.
+So a Shizuku instance started with root does not benefit from this flag; use
+`[device].attestTelephonyIds` for the identity data instead, or start Shizuku
+over ADB (it then runs as `shell`, UID 2000).
+
+Enable it only to test with tools that run keystore code from a `shell` context
+— `adb shell`, `rish`, or ADB-started Shizuku. Leave it `false` for normal use;
+`system` (1000) and every other core identity stay rejected regardless.
 
 #### `allow_unknown_package`
 
