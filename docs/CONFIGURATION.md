@@ -227,6 +227,14 @@ hexadecimal characters and must be kept private and stable.
 These fields control values reported through key attestation. They do not
 repair hardware, renew a certificate, remove a keybox revocation, or hide root.
 
+They also describe the boot stages in the DICE chain that
+`IRemotelyProvisionedComponent` returns with a certificate request. The chain
+carries one entry per boot stage: `ABL` versioned by `boot_patchlevel`, `AVB`
+measuring `vb_hash`, and `KeyMint`, each with `vb_key` as its authority. The
+entries report normal DICE mode while `verified_boot_state` and `device_locked`
+are both `true`, and debug mode otherwise. The profile name follows the resolved
+`os_version`.
+
 #### `os_version`
 
 Use `"auto"` to detect the current Android major each time the keymint process
