@@ -30,7 +30,7 @@ use crate::android::hardware::security::keymint::{
 use crate::android::system::keystore2::{
     Domain::Domain, KeyDescriptor::KeyDescriptor, ResponseCode::ResponseCode,
 };
-use crate::config::{config, Config, CryptoConfig};
+use crate::config::{config, Config, CryptoConfig, ResolvedTrust};
 use crate::global::DB;
 use crate::keymaster::db::Uuid;
 use crate::keymaster::error::{map_km_error, map_ks_error};
@@ -38,6 +38,7 @@ use crate::keymaster::utils::{
     key_characteristics_to_internal, key_creation_result_to_aidl,
     key_parameter_conversion_error_code, key_parameters_to_km, key_params_to_aidl, AppUid,
 };
+use crate::keymint::rpc::DiceBootInfo;
 use crate::keymint::{clock, sdd, soft};
 use crate::{
     android::hardware::security::keymint::ErrorCode::ErrorCode,
@@ -133,6 +134,21 @@ pub(crate) fn extract_boot_patchlevel(prop_value: &str) -> std::result::Result<u
     prop_value
         .parse::<u32>()
         .or_else(|_| extract_patchlevel(prop_value))
+}
+
+/// Describe the boot state that the DICE chain measures. The values mirror the ones reported in
+/// the attestation `RootOfTrust`, so both views of the device agree. Patch levels that do not
+/// parse are only used as measurement inputs here; `init_keymint_ta` rejects them before the TA
+/// serves requests.
+fn dice_boot_info(trust: &ResolvedTrust) -> DiceBootInfo {
+    DiceBootInfo {
+        vb_key: trust.vb_key,
+        vb_hash: trust.vb_hash,
+        boot_patchlevel: extract_boot_patchlevel(&trust.boot_patchlevel).unwrap_or_default(),
+        os_patchlevel: extract_truncated_patchlevel(&trust.os_patchlevel).unwrap_or_default(),
+        os_version: trust.os_version.max(0) as u32,
+        locked: trust.device_locked && trust.verified_boot_state,
+    }
 }
 
 /// Generate HAL information from property values.
@@ -1251,6 +1267,7 @@ fn init_keymint_ta(security_level: SecurityLevel, config: &Config) -> Result<Key
     let rpc: Box<dyn kmr_ta::device::RetrieveRpcArtifacts> = Box::new(soft::RpcArtifacts::new(
         soft::Derive::default(),
         CsrSigningAlgorithm::EdDSA,
+        dice_boot_info(&config.trust),
     ));
 
     let dev = kmr_ta::device::Implementation {
